@@ -1,5 +1,10 @@
+import os
 import sys
-sys.path.append(r'd:\versight\versight_with_backend\versight\backend')
+# Dynamic path resolution for robust testing
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+if backend_dir not in sys.path:
+    sys.path.append(backend_dir)
+
 import json
 from model import DeepfakeDetector
 
@@ -7,7 +12,11 @@ try:
     print("Loading detector...")
     detector = DeepfakeDetector()
     print("Analyzing...")
-    result = detector.analyze_video('C:\\Users\\THINKPAD\\Downloads\\test_clip.mp4')
+    test_vid = os.path.join(backend_dir, 'test_vid.mp4')
+    if not os.path.exists(test_vid):
+        raise Exception(f"Test video missing: {test_vid}")
+        
+    result = detector.analyze_video(test_vid)
     
     # Save the output to a raw file
     with open("direct_output.json", "w", encoding="utf-8") as f:

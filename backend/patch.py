@@ -5,17 +5,18 @@ with open(model_path, "r", encoding="utf-8") as f:
     code = f.read()
 
 # 1. Imports and init
-code = code.replace("import time", '''import time
 import json
 import os
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))''')
+# Client initialized in __init__
+pass
 
 code = code.replace('print("[VERSIGHT] Mathematical Forensics Engine loaded.")', 
-'''self.gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+'''self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        self.gemini_model_name = "gemini-1.5-flash"
         print("[VERSIGHT] Mathematical Forensics Engine & Gemini AI loaded.")''')
 
 # 2. Methods
@@ -36,7 +37,10 @@ Do not use markdown formatting like ```json. Output raw JSON ONLY.
         max_retries = 2
         for attempt in range(max_retries):
             try:
-                response = self.gemini_model.generate_content([prompt] + frames_pil)
+                response = self.client.models.generate_content(
+                    model=self.gemini_model_name,
+                    contents=[prompt] + frames_pil
+                )
                 text = response.text.strip()
                 if text.startswith("```json"): text = text[7:-3].strip()
                 elif text.startswith("```"): text = text[3:-3].strip()
@@ -70,12 +74,11 @@ context_logic = '''        # Step 3: Per-frame analysis
 code = code.replace("        # Step 3: Per-frame analysis\n        per_frame_results = []", context_logic)
 
 # 4. Aggregation and Return
-agg_logic = '''        final = (neural_score * 0.25 +
-                 freq_score * 0.15 +
-                 temporal_consistency * 0.15 +
-                 physio_score * 0.10 +
-                 comp_score_avg * 0.10 +
-                 gemini_score * 0.25)
+agg_logic = '''        final = (neural_score * 0.35 +
+                 freq_score * 0.20 +
+                 temporal_consistency * 0.20 +
+                 physio_score * 0.15 +
+                 comp_score_avg * 0.10)
         final = min(100, max(0, final))'''
 code = code.replace('''        final = (neural_score * 0.30 +
                  freq_score * 0.20 +

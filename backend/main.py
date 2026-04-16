@@ -7,7 +7,6 @@ import os
 import uuid
 import json
 import time
-import yt_dlp
 from model import DeepfakeDetector
 
 app = FastAPI(title="Versight AI Backend")
@@ -69,38 +68,18 @@ async def analyze_url(req: URLRequest):
         
     url = req.url
     temp_filename = f"{uuid.uuid4()}"
-    temp_path_template = os.path.join(UPLOAD_DIR, f"{temp_filename}.%(ext)s")
-    
-    ydl_opts = {
-        'outtmpl': temp_path_template,
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'noplaylist': True,
-        'quiet': True
-    }
     
     downloaded_file = None
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            # Find the actual downloaded file path
-            expected_ext = info.get('ext', 'mp4')
-            downloaded_file = os.path.join(UPLOAD_DIR, f"{temp_filename}.{expected_ext}")
-            
-        if not os.path.exists(downloaded_file):
-            # Sometimes yt-dlp merges into mkv or uses a different extension
-            # Let's just find the file that starts with temp_filename
-            for f in os.listdir(UPLOAD_DIR):
-                if f.startswith(temp_filename):
-                    downloaded_file = os.path.join(UPLOAD_DIR, f)
-                    break
-                    
+        from yt_extractor import execute_extraction
+        downloaded_file = execute_extraction(url, UPLOAD_DIR)    
         if downloaded_file and os.path.exists(downloaded_file):
             results = detector.analyze_video(downloaded_file)
             return results
         else:
-            raise Exception("Failed to download video")
+            raise Exception("Failed to stream video to disk")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"yt_extractor error: {str(e)}")
     finally:
         if downloaded_file and os.path.exists(downloaded_file):
             os.remove(downloaded_file)
@@ -134,41 +113,26 @@ async def analyze_stream_url(req: URLRequest):
     # We'll use a temporary file and clean it up after the stream ends
     
     url = req.url
-    temp_filename = f"{uuid.uuid4()}"
-    temp_path_template = os.path.join(UPLOAD_DIR, f"{temp_filename}.%(ext)s")
-    
-    ydl_opts = {
-        'outtmpl': temp_path_template,
-        'format': 'best[ext=mp4]/best', # Simplified format for faster IG extraction
-        'noplaylist': True,
-        'quiet': True,
-        'cookiefile': 'cookies.txt', # Add this if IG restricts it later
-    }
     
     def url_generator():
         yield f"data: {json.dumps({'status': 'processing', 'step': 'Downloading remote media', 'progress': 5, 'details': 'Injecting yt-dlp web hooks...'})}\n\n"
         
         downloaded_file = None
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                expected_ext = info.get('ext', 'mp4')
-                downloaded_file = os.path.join(UPLOAD_DIR, f"{temp_filename}.{expected_ext}")
-            
-            if not downloaded_file or not os.path.exists(downloaded_file):
-                for f in os.listdir(UPLOAD_DIR):
-                    if f.startswith(temp_filename):
-                        downloaded_file = os.path.join(UPLOAD_DIR, f)
-                        break
+            from yt_extractor import execute_extraction
+            downloaded_file = execute_extraction(url, UPLOAD_DIR)
             
             if downloaded_file and os.path.exists(downloaded_file):
                 # Now pass it into the main analyzer
                 for update in sse_generator(detector.analyze_video_stream(downloaded_file)):
                     yield update
             else:
-                yield f"data: {json.dumps({'status': 'error', 'detail': 'Failed to resolve remote video chunk'})}\n\n"
+                yield f"data: {json.dumps({'status': 'error', 'detail': 'Failed to stream video chunk to disk'})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'status': 'error', 'detail': f'yt-dlp extraction error: {str(e)}'})}\n\n"
+            import traceback
+            print("ERROR IN ANALYZE_STREAM_URL:")
+            print(traceback.format_exc())
+            yield f"data: {json.dumps({'status': 'error', 'detail': f'yt_extractor error: {str(e)}'})}\n\n"
         finally:
             if downloaded_file and os.path.exists(downloaded_file):
                 os.remove(downloaded_file)

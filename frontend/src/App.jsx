@@ -128,12 +128,12 @@ export default function App() {
                   url={activeMedia.url}
                   onTentative={(data) => {
                     // Surface immediate results, keep connection alive invisibly
-                    setResults(data);
+                    setResults({...data});
                     setStatus('results');
                   }}
                   onComplete={(data) => {
                     // Smartly update results with identical state when backend fully finishes
-                    setResults(data);
+                    setResults({...data});
                     setStatus('results');
                   }}
                   onError={(err) => { console.error(err); setStatus('idle'); alert(`Inspection Error: ${err}`); }}

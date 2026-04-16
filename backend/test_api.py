@@ -1,38 +1,44 @@
 import requests
 import json
-import sys
+import time
+import os
 
-filepath = r"C:\Users\THINKPAD\Downloads\test_clip.mp4"
+def check():
+    print("Checking server health...")
+    api_root = "http://127.0.0.1:8010"
+    try:
+        hr = requests.get(f"{api_root}/health", timeout=5)
+        print(f"Health check status: {hr.status_code}, Response: {hr.json()}")
+    except Exception as e:
+        print(f"Server appears down: {e}")
+        return
 
-print(f"Uploading: {filepath}")
-print("Sending to http://localhost:8081/api/analyze/upload ...")
+    print("Hitting stream analysis API...")
+    try:
+        url = f"{api_root}/api/analyze/stream/url"
+        # Using a reliable test video (Big Buck Bunny)
+        payload = {"url": "https://www.youtube.com/watch?v=aqz-KE-BPKQ"}
+        r = requests.post(url, json=payload, stream=True, timeout=120)
+        for line in r.iter_lines():
+            if line:
+                decoded_line = line.decode("utf-8")
+                if decoded_line.startswith("data: "):
+                    data = json.loads(decoded_line[6:])
+                    print(f"[EVENT] Status: {data.get('status')}, Step: {data.get('step', 'N/A')}")
+                    if data.get('status') == 'complete':
+                        print("\nANALYSIS COMPLETE!")
+                        print(f"Final Score: {data['result']['score']}")
+                        print(f"Deepfake Detected: {data['result']['is_deepfake']}")
+    except Exception as e:
+        print("Request failed:", e)
 
-with open(filepath, "rb") as f:
-    r = requests.post(
-        "http://localhost:8081/api/analyze/upload",
-        files={"file": ("test_clip.mp4", f, "video/mp4")},
-        timeout=300
-    )
+    time.sleep(2)
+    if os.path.exists("error_trace.txt"):
+        with open("error_trace.txt", "r") as f:
+            print("\nTRACEBACK:")
+            print(f.read())
+    else:
+        print("\nNo error_trace.txt found.")
 
-if r.status_code != 200:
-    print(f"Error {r.status_code}: {r.text}")
-    sys.exit(1)
-
-data = r.json()
-
-# Print summary (excluding large base64 fields)
-summary = {k: v for k, v in data.items() if k not in ("per_frame", "face_crops")}
-print("\n=== DETECTION RESULTS ===")
-print(json.dumps(summary, indent=2))
-
-print(f"\nFrames analyzed: {len(data.get('per_frame', []))}")
-print(f"Face crops returned: {len(data.get('face_crops', []))}")
-
-# Print per-frame scores
-if data.get("per_frame"):
-    print("\n--- Per-Frame Scores ---")
-    for fr in data["per_frame"]:
-        flag = "🔴" if fr["score"] > 55 else "🟢"
-        print(f"  {flag} Frame #{fr['frame_index']:>5} @ {fr['timestamp']:>6.2f}s  →  {fr['score']:>5.1f}%  ({fr['faces_detected']} faces)")
-
-print("\nDone!")
+if __name__ == "__main__":
+    check()
