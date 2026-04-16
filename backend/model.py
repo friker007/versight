@@ -464,20 +464,36 @@ class DeepfakeDetector:
         pil_img.save(buf, format="JPEG", quality=70)
         return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-    def logical_forensics_video(self, video_path):
-        prompt = """
-You are an elite visual forensics AI. I am providing you with a full video recording.
-Your job is to act as a deepfake visual fact-checker. You must heavily scrutinize the CONTEXT, PHYSICS, and UNCANNY VISUALS of the scene.
-Are the facial features too perfect, shiny, or unnaturally smoothed? Do the eyes/teeth look synthetic? Does the lighting on the subject truly match the background? Are the facial expressions slightly robotic, "uncanny", or AI-generated? Pay special attention to temporal consistency and physics across the whole video.
+    def logical_forensics_video(self, video_path, local_data=None):
+        report_section = ""
+        if local_data:
+            report_section = f"""
+### LOCAL FORENSIC SIGNAL REPORT:
+Our underlying signal analysis engines have detected the following metrics:
+- Neural Deepfake Score: {local_data.get('neural_score', 'N/A')}/100 (Anomaly intensity)
+- DCT Frequency Score: {local_data.get('freq_score', 'N/A')}/100 (Structural artifacts)
+- Temporal Consistency: {local_data.get('temporal_score', 'N/A')}/100 (Higher is more consistent/natural)
+- Ocular Symmetry: {local_data.get('eye_score', 'N/A')}/100 (Physics anomaly in eye reflection)
+- Bio-Pulse (rPPG): {local_data.get('pulse_score', 'N/A')}/100 (Higher is more likely synthetic/chaotic)
+- General AI Image Index: {local_data.get('gen_ai_score', 'N/A')}/100
+
+Please use these metrics as technical evidence to anchor your high-level visual audit. If these metrics are high but the video looks natural, investigate if "beauty filters" or high compression might be tricking the signals. If these metrics are low but you see uncanny visuals, detail why.
+"""
+
+        prompt = f"""
+You are an elite visual forensics AI. I am providing you with a full video recording and a report of low-level forensic signals detected by our local models.
+Your job is to act as a deepfake visual fact-checker and reconcile the technical signals with the high-level scene context. 
+Scrutinize the CONTEXT, PHYSICS, and UNCANNY VISUALS. Are facial features too perfect? Does lighting match? Are expressions robotic?
+{report_section}
 
 Respond STRICTLY with a JSON object containing exactly two keys:
-1. "logical_reasoning": A 2-3 sentence paragraph explaining your visual analysis and why it looks natural or synthetic.
-2. "anomaly_score": An integer from 0 to 100, where 100 heavily implies the face/context is AI-generated, synthetic, or manipulated, and 0 implies it is a 100% natural, unaltered physical camera recording.
+1. "logical_reasoning": A 2-3 sentence paragraph explaining your final reconciliation between the visual context and the provided forensic signals.
+2. "anomaly_score": A final judge's integer from 0 to 100, where 100 heavily implies AI-generation or manipulation, and 0 implies natural physical recording.
 
 Do not use markdown formatting like ```json. Output raw JSON ONLY.
 """
         try:
-            print(f"[VERSIGHT] Uploading full video to Gemini File API (Unified SDK)...")
+            print(f"[VERSIGHT] Reconciling forensic context with Gemini File API...")
             video_file = self.client.files.upload(file=video_path)
             
             # Wait for processing
@@ -532,7 +548,8 @@ Do not use markdown formatting like ```json. Output raw JSON ONLY.
         yield {"status": "processing", "step": "Video loaded", "progress": 10, "details": f"{width}x{height} @ {fps:.1f}fps"}
         
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        gemini_future = executor.submit(self.logical_forensics_video, video_path)
+        gemini_future = None
+        # Gemini call is delayed until 80% of local metrics are ready for better context reconciliation
 
         # Frame sampling
         num_sample = min(128, max(30, total_frames // max(1, int(fps))))
@@ -654,6 +671,27 @@ Do not use markdown formatting like ```json. Output raw JSON ONLY.
 
             if p_idx % 15 == 0:
                 yield {"status": "processing", "step": "11-View TTA Evaluation", "progress": min(95, 25 + int((p_idx/len(indices))*70)), "details": f"Analyzing frame {p_idx}/{len(indices)} with pretrained detector + DCT + compression"}
+            
+            # ── Gemini Early Trigger (80% frame completion) ──
+            if p_idx == int(len(indices) * 0.8) and gemini_future is None:
+                # Calculate intermediate metrics for Gemini context
+                # (Simple averages are used here as context for Gemini's visual reasoning)
+                inter_neural = np.mean(all_face_scores) if all_face_scores else 30.0
+                inter_freq = np.mean(all_freq_scores) if all_freq_scores else 15.0
+                inter_gen = np.mean(all_gen_scores) if all_gen_scores else 40.0
+                inter_eye = np.mean(all_eye_scores) if all_eye_scores else 20.0
+                inter_pulse = self.physiological_pulse_analysis(np.array(all_skin_rgbs), fps) if all_skin_rgbs else 50.0
+                inter_temporal = 100.0 - (np.std(np.diff(all_face_scores)) * 300.0) if len(all_face_scores) > 1 else 90.0
+                
+                local_summary = {
+                    "neural_score": round(float(inter_neural), 1),
+                    "freq_score": round(float(inter_freq), 1),
+                    "temporal_score": round(float(max(0.0, min(100.0, inter_temporal))), 1),
+                    "eye_score": round(float(inter_eye), 1),
+                    "pulse_score": round(float(inter_pulse), 1),
+                    "gen_ai_score": round(float(inter_gen), 1)
+                }
+                gemini_future = executor.submit(self.logical_forensics_video, video_path, local_summary)
                 
         cap.release()
 
@@ -822,13 +860,28 @@ Do not use markdown formatting like ```json. Output raw JSON ONLY.
         }
         
         yield {"status": "tentative", "result": result_template}
+
+        # ── Gemini Context Fulfillment ──
+        # Ensure Gemini job is running if it wasn't triggered early (e.g. very short video)
+        if gemini_future is None:
+            local_summary = {
+                "neural_score": round(float(neural_score), 1),
+                "freq_score": round(float(freq_score), 1),
+                "temporal_score": round(float(temporal_score), 1),
+                "eye_score": round(float(eye_score), 1),
+                "pulse_score": round(float(pulse_score), 1),
+                "gen_ai_score": round(float(gen_ai_score), 1)
+            }
+            gemini_future = executor.submit(self.logical_forensics_video, video_path, local_summary)
         
         try:
             gemini_score, gemini_reasoning = gemini_future.result(timeout=120)
         except Exception as e:
+            print(f"[VERSIGHT] Gemini post-analysis error: {e}")
             gemini_score, gemini_reasoning = 50.0, "Native forensics skipped or failed."
             
-        # Final result is solely based on local algorithmic analysis
+        # ── Final Consensus Integration ──
+        # Gemini provides context (0% weight per user request), final score remains algorithmic
         result_template["score"] = round(float(final_algorithmic), 1)
         result_template["is_deepfake"] = bool(final_algorithmic >= 50.0)
         result_template["certainty"] = "high" if final_algorithmic > 75.0 else "medium" if final_algorithmic > 40.0 else "low"
